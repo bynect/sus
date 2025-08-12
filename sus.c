@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <err.h>
@@ -9,6 +10,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <limits.h>
+#include <security/pam_appl.h>
+#include <security/pam_misc.h>
 
 #define WHEEL "wheel"
 
@@ -25,17 +28,25 @@ static void integrity_check()
 {
     uid_t uid = geteuid();
     if (uid != 0)
-        errx(1, "Wrong UID detected: %d", uid);
+        errx(1, "Running with the wrong UID: %d", uid);
+
+    struct stat st;
+    if (stat("/proc/self/exe", &st) != 0)
+        err(1, "Failed to get stat: %s", strerror(errno));
+
+    if (st.st_uid != 0)
+        errx(1, "Executable not owned by root!");
+
+    if (st.st_mode & (S_IWGRP | S_IWOTH))
+        errx(1, "Executable writable by group/others!");
 
     char buf[PATH_MAX + 1] = { 0 };
-    ssize_t r = readlink("/proc/self/exe", buf, PATH_MAX);
-
-    if (r <= 0)
+    if (!realpath("/proc/self/exe", buf))
         errx(1, "Failed to get filename: %s", strerror(errno));
 
     const char *name = filename(buf);
     if (strcmp(name, "sus"))
-        errx(1, "Wrong filename detected: %s", name);
+        errx(1, "Executable with wrong filename: %s", name);
 }
 
 // Search the user groups
@@ -66,6 +77,31 @@ static bool is_wheel(const char *user, gid_t gid)
     return ok;
 }
 
+static int pam_auth(const char *user)
+{
+    pam_handle_t *pamh = NULL;
+    struct pam_conv conv = { misc_conv, NULL };
+
+    int ret = pam_start("sus", user, &conv, &pamh);
+    if (ret != PAM_SUCCESS)
+        return ret;
+
+    ret = pam_authenticate(pamh, 0);
+    if (ret != PAM_SUCCESS) {
+        pam_end(pamh, ret);
+        return ret;
+    }
+
+    ret = pam_acct_mgmt(pamh, 0);
+    if (ret != PAM_SUCCESS) {
+        pam_end(pamh, ret);
+        return ret;
+    }
+
+    pam_end(pamh, PAM_SUCCESS);
+    return PAM_SUCCESS;
+}
+
 // Check if the user has the right permissions
 static void user_auth()
 {
@@ -88,9 +124,11 @@ static void user_auth()
     if (!is_wheel(pw.pw_name, pw.pw_gid))
         errx(1, "User is not in the %s group", WHEEL);
 
+    int ret = pam_auth(pw.pw_name);
     free(buf);
 
-    // TODO: Use PAM
+    if (ret != PAM_SUCCESS)
+        errx(1, "PAM authentication failed: %s", pam_strerror(NULL, ret));
 }
 
 int main(int argc, char **argv)

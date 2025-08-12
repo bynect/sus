@@ -3,7 +3,7 @@ SUDO ?= sudo
 all: sus
 
 sus: sus.o
-	$(CC) -o $@ $<
+	$(CC) -o $@ $< -lpam -lpam_misc
 	$(SUDO) chown root:root $@
 	$(SUDO) chmod u+s $@
 
