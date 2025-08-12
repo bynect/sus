@@ -13,7 +13,8 @@
 #include <security/pam_appl.h>
 #include <security/pam_misc.h>
 
-#define WHEEL "wheel"
+#define ALLOW_GROUP "wheel"
+#define MAX_GROUPS 128
 
 // NOTE: basename could modify the buffer, hence the need for this function
 static const char *filename(const char *path)
@@ -37,6 +38,9 @@ static void integrity_check()
     if (st.st_uid != 0)
         errx(1, "Executable not owned by root!");
 
+    if (S_ISREG(st.st_mode))
+        errx(1, "Executable is not a regular file!");
+
     if (st.st_mode & (S_IWGRP | S_IWOTH))
         errx(1, "Executable writable by group/others!");
 
@@ -52,28 +56,32 @@ static void integrity_check()
 // Search the user groups
 static bool is_wheel(const char *user, gid_t gid)
 {
-    struct group *grp = getgrnam(WHEEL);
+    struct group *grp = getgrnam(ALLOW_GROUP);
     if (!grp)
         return false;
 
-    int ngroups = 0;
-    getgrouplist(user, gid, NULL, &ngroups);
+    gid_t wheel = grp->gr_gid;
+    if (gid == wheel)
+        return true;
 
-    gid_t *groups = malloc(ngroups * sizeof(gid_t));
-    if (!groups)
-        errx(1, "Failed to allocate memory");
+    gid_t groups[MAX_GROUPS];
+    int ngroups = MAX_GROUPS;
+
+    int ret = getgrouplist(user, gid, groups, &ngroups);
+    if (ret == -1)
+        errx(1, "Failed to get user groups");
+
+    if (ngroups > MAX_GROUPS)
+        errx(1, "Do you really need so many groups");
 
     bool ok = false;
-    if (getgrouplist(user, gid, groups, &ngroups) != -1) {
-        for (int i = 0; i < ngroups; i++) {
-            if (groups[i] == grp->gr_gid) {
-                ok = true;
-                break;
-            }
+    for (int i = 0; i < ngroups; i++) {
+        if (groups[i] == wheel) {
+            ok = true;
+            break;
         }
     }
 
-    free(groups);
     return ok;
 }
 
@@ -115,7 +123,7 @@ static void user_auth()
         errx(1, "User lookup failed: %s", strerror(errno));
 
     if (!is_wheel(pw.pw_name, pw.pw_gid))
-        errx(1, "User is not in the %s group", WHEEL);
+        errx(1, "User is not in the %s group", ALLOW_GROUP);
 
     int ret = pam_auth(pw.pw_name);
     if (ret != PAM_SUCCESS)
@@ -132,6 +140,11 @@ int main(int argc, char **argv)
 
     char *binsh[] = { "sh", "-i", NULL };
     argv = argc > 1 ? &argv[1] : binsh;
+
+    // TODO: Improve env handling
+    clearenv();
+    setenv("PATH", "/usr/bin:/bin", 1);
+    setenv("TERM", "xterm-256color", 1);
 
     execvp(*argv, argv);
     errx(1, "Command execution failed: %s", strerror(errno));
