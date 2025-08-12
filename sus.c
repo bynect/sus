@@ -10,14 +10,17 @@
 #include <grp.h>
 #include <limits.h>
 
+#define WHEEL "wheel"
+
+// NOTE: basename could modify the buffer, hence the need for this function
 static const char *filename(const char *path)
 {
     int len = strlen(path);
-    while (len > 0 && path[len - 1] != '/')
-        --len;
+    for ( ; len > 0 && path[len - 1] != '/'; --len);
     return &path[len];
 }
 
+// Verify environment and program state
 static void integrity_check()
 {
     uid_t uid = geteuid();
@@ -35,10 +38,12 @@ static void integrity_check()
         errx(1, "Wrong filename detected: %s", name);
 }
 
+// Search the user groups
 static bool is_wheel(const char *user, gid_t gid)
 {
-    struct group *wheel = getgrnam("wheel");
-    if (!wheel) return false;
+    struct group *grp = getgrnam(WHEEL);
+    if (!grp)
+        return false;
 
     int ngroups = 0;
     getgrouplist(user, gid, NULL, &ngroups);
@@ -50,7 +55,7 @@ static bool is_wheel(const char *user, gid_t gid)
     bool ok = false;
     if (getgrouplist(user, gid, groups, &ngroups) != -1) {
         for (int i = 0; i < ngroups; i++) {
-            if (groups[i] == wheel->gr_gid) {
+            if (groups[i] == grp->gr_gid) {
                 ok = true;
                 break;
             }
@@ -61,6 +66,7 @@ static bool is_wheel(const char *user, gid_t gid)
     return ok;
 }
 
+// Check if the user has the right permissions
 static void user_auth()
 {
     struct passwd pw, *ptr = NULL;
@@ -80,20 +86,19 @@ static void user_auth()
     }
 
     if (!is_wheel(pw.pw_name, pw.pw_gid))
-        errx(1, "User is not in the wheel group");
+        errx(1, "User is not in the %s group", WHEEL);
 
     free(buf);
+
+    // TODO: Use PAM
 }
 
 int main(int argc, char **argv)
 {
-    // Check program state
     integrity_check();
 
-    // Authenticate user
     user_auth();
 
-    // Execute command
     char *binsh[] = { "sh", "-i", NULL };
     argv = argc > 1 ? &argv[1] : binsh;
 
