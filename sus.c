@@ -87,19 +87,14 @@ static int pam_auth(const char *user)
         return ret;
 
     ret = pam_authenticate(pamh, 0);
-    if (ret != PAM_SUCCESS) {
-        pam_end(pamh, ret);
-        return ret;
-    }
+    if (ret != PAM_SUCCESS)
+        goto end;
 
     ret = pam_acct_mgmt(pamh, 0);
-    if (ret != PAM_SUCCESS) {
-        pam_end(pamh, ret);
-        return ret;
-    }
 
-    pam_end(pamh, PAM_SUCCESS);
-    return PAM_SUCCESS;
+end:
+    pam_end(pamh, ret);
+    return ret;
 }
 
 // Check if the user has the right permissions
@@ -116,19 +111,17 @@ static void user_auth()
     if (!buf)
         errx(1, "Failed to allocate memory");
 
-    if (getpwuid_r(uid, &pw, buf, size, &ptr) != 0 || ptr == NULL) {
-        free(buf);
+    if (getpwuid_r(uid, &pw, buf, size, &ptr) != 0 || ptr == NULL)
         errx(1, "User lookup failed: %s", strerror(errno));
-    }
 
     if (!is_wheel(pw.pw_name, pw.pw_gid))
         errx(1, "User is not in the %s group", WHEEL);
 
     int ret = pam_auth(pw.pw_name);
-    free(buf);
-
     if (ret != PAM_SUCCESS)
         errx(1, "PAM authentication failed: %s", pam_strerror(NULL, ret));
+
+    free(buf);
 }
 
 int main(int argc, char **argv)
