@@ -10,11 +10,17 @@
 #include <pwd.h>
 #include <grp.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <security/pam_appl.h>
 #include <security/pam_misc.h>
 
 #define ALLOW_GROUP "wheel"
 #define MAX_GROUPS 128
+#define SAFE_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
+#define PWBUF_SIZE 16384
+
+static struct passwd userpw, rootpw;
+static char userbuf[PWBUF_SIZE], rootbuf[PWBUF_SIZE];
 
 // NOTE: basename could modify the buffer, hence the need for this function
 static const char *filename(const char *path)
@@ -25,35 +31,39 @@ static const char *filename(const char *path)
 }
 
 // Verify environment and program state
-static void integrity_check()
+static void integrity_check(const char *argv0)
 {
     uid_t uid = geteuid();
     if (uid != 0)
         errx(1, "Running with the wrong UID: %d", uid);
 
+    const char *name = filename(argv0);
+    if (strcmp(name, "sus"))
+        errx(1, "Invoked with wrong filename: %s", name);
+
+#ifdef __linux__
+    int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+        err(1, "open");
+
     struct stat st;
-    if (stat("/proc/self/exe", &st) != 0)
-        err(1, "Failed to get stat: %s", strerror(errno));
+    if (fstat(fd, &st) != 0)
+        err(1, "stat");
 
     if (st.st_uid != 0)
         errx(1, "Executable not owned by root!");
 
-    if (S_ISREG(st.st_mode))
+    if (!(st.st_mode & S_ISUID))
+        errx(1, "Executable missing SUID bit!");
+
+    if (!S_ISREG(st.st_mode))
         errx(1, "Executable is not a regular file!");
 
     if (st.st_mode & (S_IWGRP | S_IWOTH))
         errx(1, "Executable writable by group/others!");
-
-    char buf[PATH_MAX + 1] = { 0 };
-    if (!realpath("/proc/self/exe", buf))
-        errx(1, "Failed to get filename: %s", strerror(errno));
-
-    const char *name = filename(buf);
-    if (strcmp(name, "sus"))
-        errx(1, "Executable with wrong filename: %s", name);
+#endif
 }
 
-// Search the user groups
 static bool is_wheel(const char *user, gid_t gid)
 {
     struct group *grp = getgrnam(ALLOW_GROUP);
@@ -81,7 +91,6 @@ static bool is_wheel(const char *user, gid_t gid)
             break;
         }
     }
-
     return ok;
 }
 
@@ -99,6 +108,10 @@ static int pam_auth(const char *user)
         goto end;
 
     ret = pam_acct_mgmt(pamh, 0);
+    if (ret != PAM_SUCCESS)
+        goto end;
+
+    ret = pam_setcred(pamh, PAM_ESTABLISH_CRED);
 
 end:
     pam_end(pamh, ret);
@@ -108,44 +121,94 @@ end:
 // Check if the user has the right permissions
 static void user_auth()
 {
-    struct passwd pw, *ptr = NULL;
+    struct passwd *ptr = NULL;
+    if (getpwuid_r(0, &rootpw, rootbuf, sizeof(rootbuf), &ptr) != 0 || ptr == NULL)
+        errx(1, "Failed to get root info: entry too large or missing");
+
     uid_t uid = getuid();
+    ptr = NULL;
 
-    ssize_t size = sysconf(_SC_GETPW_R_SIZE_MAX);
-    if (size == -1)
-        size = 1 << 12;
+    if (getpwuid_r(uid, &userpw, userbuf, sizeof(userbuf), &ptr) != 0 || ptr == NULL)
+        errx(1, "Failed to get user info: entry too large or missing");
 
-    char *buf = malloc(size);
-    if (!buf)
-        errx(1, "Failed to allocate memory");
-
-    if (getpwuid_r(uid, &pw, buf, size, &ptr) != 0 || ptr == NULL)
-        errx(1, "User lookup failed: %s", strerror(errno));
-
-    if (!is_wheel(pw.pw_name, pw.pw_gid))
+    if (!is_wheel(userpw.pw_name, userpw.pw_gid))
         errx(1, "User is not in the %s group", ALLOW_GROUP);
 
-    int ret = pam_auth(pw.pw_name);
+    int ret = pam_auth(userpw.pw_name);
     if (ret != PAM_SUCCESS)
         errx(1, "PAM authentication failed: %s", pam_strerror(NULL, ret));
+}
 
-    free(buf);
+// Set root UID and GID
+static void priv_commit()
+{
+    umask(022);
+
+    if (setgroups(0, NULL) == -1)
+        err(1, "setgroups");
+
+    if (setgid(0) == -1)
+        err(1, "setgid");
+
+    if (setuid(0) == -1)
+        err(1, "setuid");
+}
+
+// Set safe environment variables
+static void env_prepare()
+{
+    const char *pass[] = {
+        "TERM", "DISPLAY", "XAUTHORITY", NULL
+    };
+    char *save[sizeof(pass)/sizeof(*pass)] = { NULL };
+
+    for (int i = 0; pass[i]; i++) {
+        const char *val = getenv(pass[i]);
+        save[i] = val ? strdup(val) : NULL;
+    }
+
+    if (clearenv() == -1)
+        err(1, "clearenv");
+
+    if (setenv("PATH", SAFE_PATH, 1) == -1 ||
+        setenv("USER", rootpw.pw_name, 1) == -1 ||
+        setenv("SHELL", rootpw.pw_shell, 1) == -1 ||
+        setenv("HOME", rootpw.pw_dir, 1) == -1 ||
+        setenv("LOGNAME", rootpw.pw_name, 1) == -1)
+        err(1, "setenv");
+
+    for (int i = 0; pass[i]; i++) {
+        if (!save[i])
+            continue;
+
+        if (setenv(pass[i], save[i], 1) == -1)
+            err(1, "setenv");
+
+        free(save[i]);
+    }
+}
+
+// Execute the provided command
+static void cmd_execute(int argc, char **argv)
+{
+    char *binsh[] = { rootpw.pw_shell, NULL };
+
+    if (argc == 0)
+        argv = binsh;
+
+    execvp(*argv, argv);
+    err(1, "Command execution failed");
 }
 
 int main(int argc, char **argv)
 {
-    integrity_check();
+    integrity_check(argv[0]);
 
     user_auth();
 
-    char *binsh[] = { "sh", "-i", NULL };
-    argv = argc > 1 ? &argv[1] : binsh;
+    priv_commit();
 
-    // TODO: Improve env handling
-    clearenv();
-    setenv("PATH", "/usr/bin:/bin", 1);
-    setenv("TERM", "xterm-256color", 1);
+    env_prepare();
 
-    execvp(*argv, argv);
-    errx(1, "Command execution failed: %s", strerror(errno));
+    cmd_execute(argc - 1, &argv[1]);
 }
