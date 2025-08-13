@@ -15,6 +15,7 @@
 #include <security/pam_misc.h>
 
 #define ALLOW_GROUP "wheel"
+#define SAFE_MASK 022
 #define MAX_GROUPS 128
 #define SAFE_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
 #define PWBUF_SIZE 16384
@@ -132,6 +133,9 @@ static void user_auth()
     if (getpwuid_r(uid, &userpw, userbuf, sizeof(userbuf), &ptr) != 0 || ptr == NULL)
         errx(1, "Failed to get user info: entry too large or missing");
 
+    if (uid == 0)
+        return;
+
     if (!is_wheel(userpw.pw_name, userpw.pw_gid))
         errx(1, "User is not in the %s group", ALLOW_GROUP);
 
@@ -143,7 +147,7 @@ static void user_auth()
 // Set root UID and GID
 static void priv_commit()
 {
-    umask(022);
+    umask(SAFE_MASK);
     if (setgroups(0, NULL) == -1)
         err(1, "setgroups");
 
