@@ -112,7 +112,6 @@ static int pam_auth(const char *user)
         goto end;
 
     ret = pam_setcred(pamh, PAM_ESTABLISH_CRED);
-
 end:
     pam_end(pamh, ret);
     return ret;
@@ -143,7 +142,6 @@ static void user_auth()
 static void priv_commit()
 {
     umask(022);
-
     if (setgroups(0, NULL) == -1)
         err(1, "setgroups");
 
@@ -191,10 +189,14 @@ static void env_prepare()
 // Execute the provided command
 static void cmd_execute(int argc, char **argv)
 {
-    char *binsh[] = { rootpw.pw_shell, NULL };
-
-    if (argc == 0)
+    char *binsh[3] = { NULL };
+    if (argc == 0) {
+        if (!rootpw.pw_shell) {
+            binsh[0] = "/bin/sh";
+            binsh[1] = "-i";
+        }
         argv = binsh;
+    }
 
     execvp(*argv, argv);
     err(1, "Command execution failed");
