@@ -11,8 +11,12 @@
 #include <grp.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <shadow.h>
+#include <crypt.h>
 #include <security/pam_appl.h>
 #include <security/pam_misc.h>
+
+#include "readpassphrase.h"
 
 #define ALLOW_GROUP "wheel"
 #define SAFE_MASK 022
@@ -97,6 +101,7 @@ static bool is_wheel(const char *user, gid_t gid)
     return ok;
 }
 
+#ifdef PAM
 static int pam_auth(const char *user)
 {
     pam_handle_t *pamh = NULL;
@@ -120,6 +125,27 @@ end:
     return ret;
 }
 
+#else
+static bool shadow_auth(const char *user)
+{
+    char rbuf[1024], cbuf[128], host[HOST_NAME_MAX + 1];
+    char *pass = readpassphrase("Password: ", rbuf, sizeof(rbuf), RPP_REQUIRE_TTY);
+
+    if (!pass)
+        err(1, "Failed to read passphrase");
+
+    struct spwd *spw = getspnam(user);
+    if (spw == NULL)
+        return false;
+
+    char *res = crypt(pass, spw->sp_pwdp);
+    if (res == NULL)
+        return false;
+
+    return !strcmp(res, spw->sp_pwdp);
+}
+#endif
+
 // Check if the user has the right permissions
 static void user_auth()
 {
@@ -139,9 +165,14 @@ static void user_auth()
     if (!is_wheel(userpw.pw_name, userpw.pw_gid))
         errx(1, "User is not in the %s group", ALLOW_GROUP);
 
+#ifdef PAM
     int ret = pam_auth(userpw.pw_name);
     if (ret != PAM_SUCCESS)
         errx(1, "PAM authentication failed: %s", pam_strerror(NULL, ret));
+#else
+    if (!shadow_auth(userpw.pw_name))
+        errx(1, "Authentication failed");
+#endif
 }
 
 // Set root UID and GID

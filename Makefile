@@ -1,17 +1,18 @@
+CFLAGS ?= -g -O1 #-DPAM
 SUDO ?= sudo
 
 all: sus
 
-sus: sus.o
-	$(CC) -o $@ $< -lpam -lpam_misc
+sus: sus.o readpassphrase.o
+	$(CC) -o $@ $^ -lpam -lpam_misc -lcrypt
 	$(SUDO) chown root:root $@
 	$(SUDO) chmod u+s $@
 
-sus.o: sus.c
-	$(CC) -o $@ $< -c -g -O1
+%.o: %.c
+	$(CC) -o $@ $< -c $(CFLAGS)
 
 install-pam:
 	$(SUDO) cp ./pamconf /etc/pam.d/sus
 
 clean:
-	rm -rf sus.o sus
+	rm -rf *.o sus
