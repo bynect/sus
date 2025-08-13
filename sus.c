@@ -161,10 +161,8 @@ static void priv_commit()
 // Set safe environment variables
 static void env_prepare()
 {
-    const char *pass[] = {
-        "TERM", "DISPLAY", "XAUTHORITY", NULL
-    };
-    char *save[sizeof(pass)/sizeof(*pass)] = { NULL };
+    const char *pass[3] = { "TERM", "DISPLAY", NULL };
+    char *save[3] = { NULL };
 
     for (int i = 0; pass[i]; i++) {
         const char *val = getenv(pass[i]);
