@@ -61,6 +61,8 @@ static void integrity_check(const char *argv0)
 
     if (st.st_mode & (S_IWGRP | S_IWOTH))
         errx(1, "Executable writable by group/others!");
+
+    close(fd);
 #endif
 }
 
@@ -172,7 +174,8 @@ static void env_prepare()
         setenv("USER", rootpw.pw_name, 1) == -1 ||
         setenv("SHELL", rootpw.pw_shell, 1) == -1 ||
         setenv("HOME", rootpw.pw_dir, 1) == -1 ||
-        setenv("LOGNAME", rootpw.pw_name, 1) == -1)
+        setenv("LOGNAME", rootpw.pw_name, 1) == -1 ||
+        setenv("SUS_USER", userpw.pw_name, 1) == -1)
         err(1, "setenv");
 
     for (int i = 0; pass[i]; i++) {
@@ -181,7 +184,6 @@ static void env_prepare()
 
         if (setenv(pass[i], save[i], 1) == -1)
             err(1, "setenv");
-
         free(save[i]);
     }
 }
@@ -189,12 +191,9 @@ static void env_prepare()
 // Execute the provided command
 static void cmd_execute(int argc, char **argv)
 {
-    char *binsh[3] = { NULL };
+    char *binsh[2] = { NULL };
     if (argc == 0) {
-        if (!rootpw.pw_shell) {
-            binsh[0] = "/bin/sh";
-            binsh[1] = "-i";
-        }
+        binsh[0] = rootpw.pw_shell ? rootpw.pw_shell : "/bin/sh";
         argv = binsh;
     }
 
