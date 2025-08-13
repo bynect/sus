@@ -10,5 +10,8 @@ sus: sus.o
 sus.o: sus.c
 	$(CC) -o $@ $< -c -g -O1
 
+install-pam:
+	$(SUDO) cp ./pamconf /etc/pam.d/sus
+
 clean:
 	rm -rf sus.o sus
