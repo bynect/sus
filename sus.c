@@ -179,8 +179,9 @@ static void user_auth()
 static void priv_commit()
 {
     umask(SAFE_MASK);
-    if (setgroups(0, NULL) == -1)
-        err(1, "setgroups");
+
+    if (initgroups(rootpw.pw_name, rootpw.pw_gid) == -1)
+        err(1, "initgroups");
 
     if (setgid(0) == -1)
         err(1, "setgid");
