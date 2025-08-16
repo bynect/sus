@@ -1,10 +1,17 @@
-CFLAGS ?= -g -O1 #-DPAM
+CFLAGS ?= -g -O1
 SUDO ?= sudo
+
+ifdef PAM
+CFLAGS += -DPAM
+LIBS = -lpam -lpam_misc
+else
+LIBS = -lcrypt
+endif
 
 all: sus
 
 sus: sus.o readpassphrase.o
-	$(CC) -o $@ $^ -lpam -lpam_misc -lcrypt
+	$(CC) -o $@ $^ $(LIBS)
 	$(SUDO) chown root:root $@
 	$(SUDO) chmod u+s $@
 

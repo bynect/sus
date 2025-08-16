@@ -62,6 +62,34 @@ static bool in_group(const char *user, gid_t gid)
     return ok;
 }
 
+#ifdef PAM
+#include <security/pam_appl.h>
+#include <security/pam_misc.h>
+
+static int pam_auth(const char *user)
+{
+    pam_handle_t *pamh = NULL;
+    struct pam_conv conv = { misc_conv, NULL };
+
+    int ret = pam_start("sus", user, &conv, &pamh);
+    if (ret != PAM_SUCCESS)
+        return ret;
+
+    ret = pam_authenticate(pamh, 0);
+    if (ret != PAM_SUCCESS)
+        goto end;
+
+    ret = pam_acct_mgmt(pamh, 0);
+    if (ret != PAM_SUCCESS)
+        goto end;
+
+    ret = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+end:
+    pam_end(pamh, ret);
+    return ret;
+}
+
+#else
 static bool shadow_auth(const char *user)
 {
     char rbuf[1024], cbuf[128], host[HOST_NAME_MAX + 1];
@@ -78,6 +106,7 @@ static bool shadow_auth(const char *user)
     char *res = crypt(pass, spw->sp_pwdp);
     return res && !strcmp(res, spw->sp_pwdp);
 }
+#endif
 
 static void user_auth()
 {
@@ -98,8 +127,14 @@ static void user_auth()
     if (!in_group(userpw.pw_name, userpw.pw_gid))
         errx(1, "User is not in the %s group", ALLOW_GROUP);
 
+#ifdef PAM
+    int ret = pam_auth(userpw.pw_name);
+    if (ret != PAM_SUCCESS)
+        errx(1, "PAM authentication failed: %s", pam_strerror(NULL, ret));
+#else
     if (!shadow_auth(userpw.pw_name))
         errx(1, "Authentication failed");
+#endif
 }
 
 static void env_prepare()
@@ -152,6 +187,9 @@ static void cmd_execute(int argc, char **argv)
     if (argc <= 1) {
         binsh[0] = rootpw.pw_shell ? rootpw.pw_shell : "/bin/sh";
         argv = binsh;
+    } else {
+        // Skip argv0
+        argv++;
     }
 
     execvp(*argv, argv);
