@@ -8,3 +8,5 @@ It simply allows you to execute commands as the super user if you are in the whe
 > Use at your own risk...
 
 Licensed under the [BSD 3-Clause License](./LICENSE).
+
+See the associated article [here](https://fedang.net/posts/remaking-sudo/).
